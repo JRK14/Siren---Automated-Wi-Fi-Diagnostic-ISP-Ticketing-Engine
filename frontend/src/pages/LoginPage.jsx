@@ -128,7 +128,7 @@ export default function LoginPage() {
                 left: 0,
                 right: 0,
                 bottom: 0,
-                backgroundImage: `linear-gradient(180deg, rgba(10, 11, 22, 0.25) 0%, rgba(10, 11, 22, 0.75) 100%), url(/src/assets/${img})`,
+                backgroundImage: `linear-gradient(180deg, rgba(10, 11, 22, 0.25) 0%, rgba(10, 11, 22, 0.75) 100%), url(/assets/${img})`,
                 backgroundSize: 'cover',
                 backgroundPosition: 'center',
                 opacity: currentImageIndex === idx ? 1 : 0,
