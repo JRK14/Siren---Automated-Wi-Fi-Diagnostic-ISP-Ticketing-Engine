@@ -1,3 +1,5 @@
+import math
+
 class EWMAAnomalyDetector:
     """
     Exponentially Weighted Moving Average (EWMA) to establish household baseline
@@ -29,7 +31,7 @@ class EWMAAnomalyDetector:
             return 0.0
         
         mean = self.means[metric_name]
-        std = np.sqrt(self.vars[metric_name]) if metric_name in self.vars else 0.0
+        std = math.sqrt(self.vars[metric_name]) if metric_name in self.vars else 0.0
         
         if std < 0.01:
             return 0.0
