@@ -1,5 +1,3 @@
-import numpy as np
-
 class EWMAAnomalyDetector:
     """
     Exponentially Weighted Moving Average (EWMA) to establish household baseline
