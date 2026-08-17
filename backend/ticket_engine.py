@@ -35,61 +35,86 @@ async def check_for_duplicate_ticket(user_id: str, root_cause: str, window_hours
     return False
 
 import os
+import requests
+import json
 
-# Setup Gemini model configuration
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# Setup OpenRouter config
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
 async def generate_llm_summaries(diag: dict) -> tuple:
     """
     Agent 5: Response Generation.
-    Uses Google Gemini (1.5 Flash) to translate raw metric parameters into structured summaries.
-    Returns (user_summary, technical_summary).
+    Uses OpenRouter (google/gemini-2.5-flash) to translate raw metric parameters.
+    Falls back completely silently if the API fails, times out, or returns bad data.
     """
-    if not GEMINI_API_KEY:
-        # Fallback to high-fidelity templates if API key is not configured
+    if not OPENROUTER_API_KEY:
         return None, None
         
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Construct OpenAI-compatible OpenRouter payload
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "HTTP-Referer": "https://siren-wifi.com",
+            "X-Title": "Siren WiFi Diagnostics",
+            "Content-Type": "application/json"
+        }
+        
         prompt = f"""
-        You are an advanced AI network diagnostics agent for an ISP.
-        Translate the following network parameters into two outputs:
-        1. A plain-language, non-technical explanation for a home user explaining what is wrong and how to solve it.
-        2. A concise, highly professional technical ticket description for an ISP operations engineer.
-
-        Network Diagnostics:
-        - Root Cause: {diag.get('root_cause')}
-        - RSSI (Signal): {diag.get('rssi')} dBm
-        - Avg Ping: {diag.get('latency')} ms
+        You are an advanced AI network diagnostics assistant.
+        Analyze these network parameters:
+        - Root Cause Class: {diag.get('root_cause')}
+        - RSSI: {diag.get('rssi')} dBm
+        - Latency: {diag.get('latency')} ms
         - Packet Loss: {diag.get('packet_loss')}%
         - Jitter: {diag.get('jitter')} ms
         - DNS Resolution time: {diag.get('dns_time')} ms
-        - HTTP Probe Success: {diag.get('http_probe_success')}
-        - Download Speed: {diag.get('download_speed')} Mbps
-        - Upload Speed: {diag.get('upload_speed')} Mbps
+        - HTTP Probe: {diag.get('http_probe_success')}
+        - Speed (Download/Upload): {diag.get('download_speed')}/{diag.get('upload_speed')} Mbps
 
-        Return the response strictly in this JSON format:
+        Return a JSON object containing:
+        1. "user_summary": A clear, non-technical explanation for a home user explaining what is wrong and how to solve it. Keep it friendly.
+        2. "technical_summary": A concise technical ticket description for an ISP operations engineer.
+
+        Format strictly as raw JSON, e.g.:
         {{
-            "user_summary": "user explanation here",
-            "technical_summary": "tech description here"
+            "user_summary": "...",
+            "technical_summary": "..."
         }}
-        Do not output any markdown code blocks or wrapper text, just the raw JSON object.
+        Do not wrap in markdown or backticks.
         """
-        response = model.generate_content(prompt)
-        import json
-        text = response.text.strip()
-        # Clean any accidental markdown backticks
-        if text.startswith("```json"):
-            text = text[7:]
-        if text.endswith("```"):
-            text = text[:-3]
-        data = json.loads(text.strip())
-        return data.get("user_summary"), data.get("technical_summary")
+        
+        # Use google/gemini-2.5-flash: the cheapest, fastest, and most efficient quality model on OpenRouter
+        data = {
+            "model": "google/gemini-2.5-flash",
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "response_format": {"type": "json_object"},
+            "timeout": 6.0
+        }
+        
+        # Run request inside a thread pool or call synchronously (low weight)
+        response = requests.post(url, headers=headers, json=data, timeout=8.0)
+        
+        if response.status_code == 200:
+            res_json = response.json()
+            content = res_json["choices"][0]["message"]["content"].strip()
+            
+            # Remove any markdown JSON wrappers if returned
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.endswith("```"):
+                content = content[:-3]
+                
+            parsed = json.loads(content.strip())
+            return parsed.get("user_summary"), parsed.get("technical_summary")
+            
     except Exception as e:
-        print(f"[LLM Agent] Gemini Generation failed, falling back: {e}")
-        return None, None
+        # Silent failure: log to backend stdout, user never sees any outage
+        print(f"[LLM Agent] OpenRouter transaction failed: {e}. Falling back silently.")
+        
+    return None, None
 
 async def create_diagnostic_ticket(user_id: str, diagnostic_id: str, user_notes: str = ""):
     """
