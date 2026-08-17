@@ -437,30 +437,50 @@ def _measure_real_speed():
     
     return download_mbps, upload_mbps
 
+# Global flag to prevent concurrent background speed tests
+_speed_test_running = False
+
+async def _bg_speed_test_worker():
+    """Asynchronous background worker that updates the global speed cache."""
+    global _speed_cache, _speed_test_running
+    _speed_test_running = True
+    try:
+        # Run synchronous measurement in a thread pool to avoid blocking the event loop
+        loop = asyncio.get_running_loop()
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            dl, ul = await loop.run_in_executor(pool, _measure_real_speed)
+        
+        if dl > 0:
+            _speed_cache["download"] = dl
+            _speed_cache["upload"] = ul
+            _speed_cache["timestamp"] = import_time_module()
+            print(f"[Speed Worker] Updated speed cache: DL {dl} Mbps, UL {ul} Mbps")
+    except Exception as e:
+        print(f"[Speed Worker] Background speed test failed: {e}")
+    finally:
+        _speed_test_running = False
+
 @app.websocket("/ws/telemetry")
 async def websocket_telemetry_stream(websocket: WebSocket):
     """Streams live connection telemetry to the active dashboard every 3 seconds."""
-    global _speed_cache
+    global _speed_cache, _speed_test_running
     await manager.connect(websocket)
     try:
         while True:
+            # Check if cache is expired and no background test is currently running
+            current_time = import_time_module()
+            if (current_time - _speed_cache["timestamp"] > SPEED_CACHE_TTL) and not _speed_test_running:
+                # Trigger the speed test asynchronously in the background
+                asyncio.create_task(_bg_speed_test_worker())
+
             # Run telemetry + quick probe in executor to avoid blocking event loop
             import concurrent.futures
             loop = asyncio.get_event_loop()
             
-            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 telemetry_future = loop.run_in_executor(executor, tc.collect_telemetry)
                 probe_future = loop.run_in_executor(executor, ds.quick_probe)
-                
-                # Real speed measurement with caching (re-measure every 60s)
-                current_time = import_time_module()
-                if current_time - _speed_cache["timestamp"] > SPEED_CACHE_TTL:
-                    speed_future = loop.run_in_executor(executor, _measure_real_speed)
-                    dl, ul = await speed_future
-                    if dl > 0:
-                        _speed_cache["download"] = dl
-                        _speed_cache["upload"] = ul
-                        _speed_cache["timestamp"] = current_time
                 
                 telemetry = await telemetry_future
                 probe = await probe_future
