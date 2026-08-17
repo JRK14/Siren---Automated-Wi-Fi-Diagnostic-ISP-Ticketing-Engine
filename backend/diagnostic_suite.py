@@ -132,14 +132,15 @@ def run_dns_probe(domains=None):
 def run_traceroute(target="8.8.8.8"):
     """
     Runs real traceroute on macOS/Linux, parses hop-by-hop path.
+    Optimized for speed (max 5 hops, 1 second timeout).
     """
     try:
         if platform.system() in ("Darwin", "Linux"):
             proc = subprocess.Popen(
-                ["traceroute", "-m", "8", "-w", "2", target],
+                ["traceroute", "-m", "5", "-w", "1", target],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
-            out, _ = proc.communicate(timeout=20)
+            out, _ = proc.communicate(timeout=6)
             output = out.decode(errors='ignore')
             
             hops = []
@@ -194,13 +195,11 @@ def _run_traceroute_simulation(target="8.8.8.8"):
     hops = [
         {"hop": 1, "ip": "192.168.1.1", "host": "router.local", "rtt": round(random.uniform(1.2, 4.5), 1)},
     ]
-    
     base_rtt = hops[0]["rtt"]
     isp_hops = [
         {"hop": 2, "ip": "10.0.0.1", "host": "isp-gateway.net", "rtt_offset": random.uniform(8.0, 15.0)},
         {"hop": 3, "ip": "72.14.23.41", "host": "dns.google", "rtt_offset": random.uniform(12.0, 25.0)}
     ]
-    
     current_rtt = base_rtt
     for hop_data in isp_hops:
         current_rtt += hop_data["rtt_offset"]
@@ -210,152 +209,54 @@ def _run_traceroute_simulation(target="8.8.8.8"):
             "host": hop_data["host"],
             "rtt": round(current_rtt, 1)
         })
-        
     return hops
-
-def quick_probe():
-    """
-    Lightweight probe for live dashboard updates.
-    Runs an 8-ping burst with 100ms interval, a real DNS resolution check,
-    and a real HTTP HEAD probe. All measurements use actual OS network calls.
-    Works identically on macOS, Windows, and Linux.
-    """
-    latencies = []
-    successes = 0
-    count = 8
-    
-    # ── Step 1: Real ICMP Ping (cross-platform) ──
-    try:
-        if platform.system() == "Darwin":
-            cmd = ["ping", "-c", str(count), "-i", "0.1", "-W", "1000", "8.8.8.8"]
-        elif platform.system() == "Linux":
-            cmd = ["ping", "-c", str(count), "-i", "0.1", "-W", "2", "8.8.8.8"]
-        elif platform.system() == "Windows":
-            cmd = ["ping", "-n", str(count), "-w", "1000", "8.8.8.8"]
-        else:
-            raise OSError("Unsupported")
-        
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        out, _ = proc.communicate(timeout=5)
-        output = out.decode(errors='ignore')
-        
-        rtt_matches = re.findall(r'time[=<]\s*([\d.]+)\s*ms', output)
-        if rtt_matches:
-            latencies = [float(r) for r in rtt_matches]
-            successes = len(latencies)
-        
-        loss_match = re.search(r'([\d.]+)%\s*(?:packet\s+)?loss', output)
-        packet_loss = float(loss_match.group(1)) if loss_match else ((count - successes) / count) * 100.0
-    except Exception:
-        # HTTP fallback if ICMP is blocked (cloud VMs, restricted environments)
-        for _ in range(count):
-            probe = run_http_probe("https://1.1.1.1", timeout=1.0)
-            if probe["success"]:
-                latencies.append(probe["latency"] / 4.0)
-                successes += 1
-        packet_loss = ((count - successes) / count) * 100.0
-    
-    if not latencies:
-        return {
-            "latency": 999.0,
-            "jitter": 99.0,
-            "packet_loss": 100.0,
-            "dns_time": 9999.0,
-            "http_ok": False
-        }
-    
-    avg = sum(latencies) / len(latencies)
-    if len(latencies) > 1:
-        diffs = [abs(latencies[i+1] - latencies[i]) for i in range(len(latencies)-1)]
-        jitter = sum(diffs) / len(diffs)
-    else:
-        jitter = 0.0
-    
-    # ── Step 2: Real DNS Resolution (cross-platform via socket.getaddrinfo) ──
-    # Measure actual recursive DNS lookup time for REAL domains.
-    # Uses socket.getaddrinfo which works identically on macOS, Windows, and Linux.
-    # We test 3 popular domains and take the median to filter outliers.
-    dns_domains = ["google.com", "cloudflare.com", "amazon.com"]
-    dns_times = []
-    for domain in dns_domains:
-        try:
-            dns_start = time.time()
-            socket.getaddrinfo(domain, 80, socket.AF_INET, socket.SOCK_STREAM)
-            dns_elapsed = (time.time() - dns_start) * 1000.0
-            dns_times.append(dns_elapsed)
-        except Exception:
-            dns_times.append(1500.0)  # DNS failure timeout
-    
-    dns_times.sort()
-    dns_time = dns_times[len(dns_times) // 2]  # median
-    
-    # ── Step 3: Real HTTP HEAD Probe (cross-platform via requests/urllib) ──
-    # Completely independent from DNS measurement.
-    # Verifies actual end-to-end internet connectivity.
-    http_ok = False
-    try:
-        http_resp = requests.head("https://www.google.com", timeout=3.0)
-        http_ok = http_resp.status_code < 400
-    except Exception:
-        # Fallback: try urllib (no external dependency) for maximum cross-OS safety
-        try:
-            import urllib.request
-            req = urllib.request.Request("https://www.google.com", method="HEAD")
-            resp = urllib.request.urlopen(req, timeout=3)
-            http_ok = resp.status < 400
-        except Exception:
-            http_ok = False
-    
-    return {
-        "latency": round(avg, 1),
-        "jitter": round(jitter, 1),
-        "packet_loss": round(packet_loss, 1),
-        "dns_time": round(dns_time, 1),
-        "http_ok": http_ok
-    }
 
 def execute_diagnostic_suite(custom_anomaly=None):
     """
     Executes diagnostic components in parallel.
-    Uses speedtest-cli to execute real Ookla Speedtest for maximum accuracy.
+    Optimized for high-speed response (under 3 seconds) using parallelized Cloudflare throughput probes.
     """
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    # Define fast speed test tasks
+    def run_fast_download():
+        try:
+            dl_start = time.time()
+            dl_res = requests.get("https://speed.cloudflare.com/__down?bytes=2000000", timeout=5.0)
+            dl_elapsed = time.time() - dl_start
+            if dl_res.ok and dl_elapsed > 0:
+                return round((len(dl_res.content) * 8.0) / (dl_elapsed * 1000000.0), 1)
+        except Exception:
+            pass
+        return 0.0
+
+    def run_fast_upload():
+        try:
+            upload_payload = b'0' * 500000  # 500 KB
+            ul_start = time.time()
+            ul_res = requests.post("https://speed.cloudflare.com/__up", data=upload_payload, timeout=5.0)
+            ul_elapsed = time.time() - ul_start
+            if ul_res.ok and ul_elapsed > 0:
+                return round((len(upload_payload) * 8.0) / (ul_elapsed * 1000000.0), 1)
+        except Exception:
+            pass
+        return 0.0
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
         ping_future = executor.submit(run_ping_test)
         http_future = executor.submit(run_http_probe)
         trace_future = executor.submit(run_traceroute)
         dns_future = executor.submit(run_dns_probe)
+        dl_future = executor.submit(run_fast_download)
+        ul_future = executor.submit(run_fast_upload)
         
         ping_results = ping_future.result()
         http_results = http_future.result()
         traceroute = trace_future.result()
         dns_results = dns_future.result()
+        download_speed = dl_future.result()
+        upload_speed = ul_future.result()
 
     latency = ping_results["avg_latency"]
-    download_speed = 0.0
-    upload_speed = 0.0
     
-    # Real Ookla Speedtest via speedtest-cli
-    try:
-        import speedtest
-        s = speedtest.Speedtest()
-        s.get_best_server()
-        s.download(threads=4)
-        s.upload(threads=4)
-        res = s.results.dict()
-        download_speed = round(res["download"] / 1000000.0, 1)
-        upload_speed = round(res["upload"] / 1000000.0, 1)
-    except Exception as e:
-        print(f"[Speedtest CLI] Error running Ookla speedtest: {e}")
-        # Secondary fallback via Cloudflare CDN download chunk
-        try:
-            dl_start = time.time()
-            dl_res = requests.get("https://speed.cloudflare.com/__down?bytes=15000000", timeout=8.0)
-            dl_elapsed = time.time() - dl_start
-            if dl_res.ok and dl_elapsed > 0:
-                download_speed = round((len(dl_res.content) * 8.0) / (dl_elapsed * 1000000.0), 1)
-        except Exception:
-            pass
-
     # Calibrated fallbacks in case download speed measurements failed
     if download_speed <= 0.0:
         base_down = 350.0

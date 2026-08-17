@@ -236,6 +236,10 @@ async def trigger_diagnostics(payload: DiagnosticTrigger, user: dict = Depends(g
     telemetry = tc.collect_telemetry()
     results = ds.execute_diagnostic_suite(custom_anomaly=payload.custom_anomaly)
     
+    # Merge live RF telemetry into the diagnostic results to ensure anomaly detection,
+    # ML root-cause classification, and frontend views use accurate client-side data.
+    results.update(telemetry)
+    
     # Fetch historical diagnostic logs for EWMA calculations
     history = []
     async for r in db.diagnostics.find({"user_id": user["id"]}).sort("timestamp", -1).limit(20):
